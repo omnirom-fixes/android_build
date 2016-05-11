@@ -69,15 +69,18 @@ def search_gerrit_for_device(device):
     git_req = urllib.request.Request(git_search_url)
     try:
         response = urllib.request.urlopen(git_req)
-    except urllib.request.HTTPError:
-        raise Exception("There was an issue connecting to gerrit."
+    except urllib.request.HTTPError as e:
+        print("There was an issue connecting to gerrit."
                         " Please try again in a minute")
-    # Skip silly gerrit "header"
-    response.readline()
-    git_data = json.load(response)
-    device_data = check_repo_exists(git_data, device)
-    print("found the {} device repo".format(device))
-    return device_data
+    except urllib.request.URLError as e:
+        print("WARNING: No network connection available.")
+    else:
+        # Skip silly gerrit "header"
+        response.readline()
+        git_data = json.load(response)
+        device_data = check_repo_exists(git_data, device)
+        print("found the {} device repo".format(device))
+        return device_data
 
 
 def parse_device_directory(device_url, device):
@@ -264,6 +267,35 @@ def create_dependency_manifest(dependencies):
         os.system("repo sync -f --no-clone-bundle %s" % " ".join(projects))
 
 
+def create_common_dependencies_manifest(dependencies):
+    dep_file = "omni.dependencies"
+    common_list = []
+    if dependencies is not None:
+        for dependency in dependencies:
+            try:
+                index = common_list.index(dependency['target_path'])
+            except ValueError:
+                index = None
+            if index is None:
+                common_list.append(dependency['target_path'])
+                dep_location = '/'.join([dependency['target_path'], dep_file])
+                if not os.path.isfile(dep_location):
+                    sys.exit()
+                else:
+                    try:
+                        with open(dep_location, 'r') as f:
+                            common_deps = json.loads(f.read())
+                    except ValueError:
+                        raise Exception("ERROR: malformed dependency file")
+
+                    if common_deps is not None:
+                        print("Looking for dependencies on: ",
+                               dependency['target_path'])
+                        check_manifest_problems(common_deps)
+                        create_dependency_manifest(common_deps)
+                        create_common_dependencies_manifest(common_deps)
+
+
 def fetch_dependencies(device):
     location = parse_device_from_folder(device)
     if location is None or not os.path.isdir(location):
@@ -272,6 +304,7 @@ def fetch_dependencies(device):
     dependencies = parse_dependency_file(location)
     check_manifest_problems(dependencies)
     create_dependency_manifest(dependencies)
+    create_common_dependencies_manifest(dependencies)
     fetch_device(device)
 
 def check_device_exists(device):
@@ -285,18 +318,19 @@ def fetch_device(device):
     if check_device_exists(device):
         print("WARNING: Trying to fetch a device that's already there")
     git_data = search_gerrit_for_device(device)
-    device_url = git_data['id']
-    device_dir = parse_device_directory(device_url, device)
-    project = create_manifest_project(device_url,
+    if git_data is not None:
+        device_url = git_data['id']
+        device_dir = parse_device_directory(device_url, device)
+        project = create_manifest_project(device_url,
                                       device_dir,
                                       remote=default_team_rem)
-    if project is not None:
-        manifest = append_to_manifest(project)
-        write_to_manifest(manifest)
-    # In case a project was written to manifest, but never synced
-    if project is not None or not check_target_exists(device_dir):
-        print("syncing the device config")
-        os.system('repo sync -f --no-clone-bundle %s' % device_dir)
+        if project is not None:
+            manifest = append_to_manifest(project)
+            write_to_manifest(manifest)
+        # In case a project was written to manifest, but never synced
+        if project is not None or not check_target_exists(device_dir):
+            print("syncing the device config")
+            os.system('repo sync -f --no-clone-bundle %s' % device_dir)
 
 
 if __name__ == '__main__':
